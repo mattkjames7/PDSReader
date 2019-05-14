@@ -1,46 +1,41 @@
 import numpy as np
-from ... import Globals
-from ...Tools.SearchForFile import SearchForFile
-from ...Tools.SearchForFilePattern import SearchForFilePattern
+import os
+from .SearchForFile import SearchForFile
+from .SearchForFilePattern import SearchForFilePattern
 
-def FindPDSFiles():
+def FindPDSFiles(InPath,FMTname,FilePattern):
 	'''
-	Searches the PDS directory within the $MESSENGER_PATH/FIPS directory
-	for data files and fmt files.
+	Searches a directory (InPath) for a .fmt file and for all of the 
+	data files.
 	
+	Inputs:
+		InPath: An absolute path to the folder which contains both the
+				.fmt file and all of the data. If you have downloaded an
+				entire PDS repository, then use the root of that folder.
+		FMTname: Either provide the name of the file as a string, or the
+				name and absolute path of the .fmt file.
+		FilePattern: This is the pattern which will be used to search 
+				for the data files, this requires the use of wildcards
+				(*) e.g. FilePattern = 'FIPS_R*EDR*.DAT'. It's best to
+				be as specific as possible, in case there are multiple 
+				different data types with very similar names within the 
+				same folder.
+				
 	Returns:
-		Python dict containing lists of data files.
+		(fmtfile,datafiles)
+		fmtfile = path and file name of .fmt file to read
+		datafiles = array containing all the names of the data files
+			which were found.
 	
 	'''
-	#pds path
-	startpath = Globals.MessPath+'FIPS/PDS/'
-	
-	#list of data products
-	Prods = ['edr','cdr','espec','ntp']
-	
-	#list of fmt files
-	fmts = ['FIPS_SCAN.FMT','FIPS_SCAN_CDR.FMT','FIPS_ESPEC_DDR.FMT','FIPS_NTP_DDR.FMT',]
-	
-	#list of file patterns
-	patt = ['FIPS_R*EDR*.DAT','FIPS_R*CDR*.TAB','FIPS_ESPEC_*.TAB','FIPS_NTP_*.TAB']
+	#find the fmt file first
+	if os.path.isfile(FMTname):
+		fmtfile = FMTname
+	else:
+		fmtfile = SearchForFile(InPath,FMTname)[0]
+		
+	#find the list of data files
+	datafiles = SearchForFilePattern(InPath,FilePattern)
+		
 
-
-	#list the outpur dirs too
-	outdirs = ['EDR/','CDR/','ESPEC/','NTP/']
-
-	#create output dictionary
-	out = {}
-	
-	#now to find file lists
-	for i in range(0,4):
-		#find the fmt file first
-		fmtfile = SearchForFile(startpath,fmts[i])
-		
-		#find the list of data files
-		datafiles = SearchForFilePattern(startpath,patt[i])
-		
-		
-		#add to the dictionary
-		out[Prods[i]] = (fmtfile[0],datafiles,outdirs[i])
-		
-	return out
+	return fmtfile,datafiles

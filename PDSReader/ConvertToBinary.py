@@ -1,75 +1,69 @@
 import numpy as np
 from .FindPDSFiles import FindPDSFiles
-from ...Tools.ReadPDSFile import ReadPDSFile
+from .ReadPDSFile import ReadPDSFile
 import RecarrayTools as RT
-from ... import Globals
-from ...Tools.PDSFMTtodtype import PDSFMTtodtype
+from .PDSFMTtodtype import PDSFMTtodtype
 import DateTimeTools as TT
 import os
-
-edrfields = {	'MET':				'MET',
-				'FIPS_SCANTYPE':	'ScanType',
-				'PROTON_RATE':		'ProtonRate',}
-				
-cdrfields = {	'MET':				'MET',
-				'TIME':				('Date','ut'),
-				'DATA_QUALITY':		'Quality',
-				'FIPS_SCANTYPE':	'ScanType',
-				'PROTON_DIFFINTENS':'ProtonFlux',}
-
-especfields = {	'INDEX':			'Index',
-				'MET':				'MET',
-				'H':				'HFlux',
-				'HE2':				'He2Flux',
-				'HE':				'HeFlux',
-				'NA_GROUP':			'NaFlux',
-				'O_GROUP':			'OFlux',}
-				
-ntpfields = {	'START_INDEX':		'StartIndex',
-				'STOP_INDEX':		'StopIndex',
-				'START_MET':		'StartMET',
-				'STOP_MET':			'StopMET',
-				'TIME_RESL':		'TimeRes',
-				'ION':				'Ion',
-				'N':				'n',
-				'T':				't',
-				'P':				'p',
-				'N_ERR':			'nErr',
-				'T_ERR':			'tErr',
-				'P_ERR':			'pErr',
-				'QUAL':				'Quality'}
-				
-
-def ConvertToBinary(ConvEDR=True,ConvCDR=True,ConvESPEC=True,ConvNTP=True):
+import re
 	
-	#set the NS path
-	nspath = Globals.MessPath+'FIPS/'
+def ConvertToBinary(InPath,OutPath,FilePattern,FMTname,OutDict=None,DateRegex=None):
+	'''
+	This will convert the data files within a directory to a simple 
+	binary format which can be ready quickly using the RecarrayTools
+	package.
 	
-	#get the lists of files
-	nspds = FindPDSFiles()
-
-	#set the fname pattern
-	fpatts = ['FIPS-EDR-{:08d}.bin','FIPS-CDR-{:08d}.bin','FIPS-ESPEC-{:08d}.bin','FIPS-NTP-{:08d}.bin']
-	
-	#list the fields to keep and their new names
-	allfields = [edrfields,cdrfields,especfields,ntpfields]
-	
-	#list the 5 products
-	Prods = ['edr','cdr','espec','ntp']
-
-	DateInds = [[6,13],[6,13],[11,18],[9,16]]
-
-	ConvList = [ConvEDR,ConvCDR,ConvESPEC,ConvNTP]
-
-	#now loop through converting each product
-	for i in range(0,4):
-		print('Converting Product: {:s} ({:d}/{:d})'.format(Prods[i],i+1,4))
-		if ConvList[i]:
-			fmt,files,outdir = nspds[Prods[i]]
-			field = allfields[i]
+	Inputs:
+		InPath: The path to the folder which contains the data files and
+			the .fmt file.
+		OutPath: The full path where the converted files will be saved.
+			The files in this path will be saved with names in the format
+			yyyymmdd.bin, where yyyy, mm and dd are the year, month and
+			day, respectively.
+		FilePattern: This is the pattern which will be used to search 
+			for the data files, this requires the use of wildcards
+			(*) e.g. FilePattern = 'FIPS_R*EDR*.DAT'. It's best to
+			be as specific as possible, in case there are multiple 
+			different data types with very similar names within the 
+			same folder.
+		FMTname: Either provide the name of the file as a string, or the
+			name and absolute path of the .fmt file.
+		OutDict: This is a dict object which would map the names of the 
+			fields defined in the .fmt file to whatever you want to name 
+			them e.g.:
+			OutDict = {	'MET':				'MET',
+						'FIPS_SCANTYPE':	'ScanType',
+						'PROTON_RATE':		'ProtonRate',}		
+			which maps the original name on the left, to the new name on 
+			the right (i.e. PROTON_RATE becomes ProtonRate). This is 
+			mostly cosmetic, but can be useful in converting dates too e.g.
 			
-			_ConvBinary(fmt,files,outdir,fpatts[i],field,DateInds[i])
+					{	'UTC_TIME':		('Date','ut'),
+						'CMD_UTC_DATE':	('Date',),
+						'CMD_UTC_TIME':	('ut',)}
+			where ('Date','ut') tells the function to expect dates and 
+			times with the format YYYY-MM-DDThh:mm:ss.sss(s...), or 
+			('Date',) mean the function will expect and ascii date in 
+			the format YYYY-MM-DD, or ('ut',) tells the function to 
+			convert times from the format hh:mm:ss.sss...
+		DateRegex: Use this to define the regex pattern for the date as
+			is appears on the file name (if possible). If left equal to
+			None, then by default it should try to locate the date in
+			either the yyyymmdd or yyyyddd format.
 		
+	'''
+	#search for the PDS files
+	fmt,files = FindPDSFiles(InPath,FMTname,FilePattern)
+	
+	#check that the output directory exists, mkdir if not
+	if not os.path.isdir(OutPath):
+		os.system('mkdir -pv '+OutPath)
+		
+	#now convert them
+	_ConvBinary(fmt,files,OutPath,FilePattern,OutDict,DateRegex)
+	
+
+
 		
 def _NewDtype(pdsdata,fields):
 	
@@ -97,41 +91,103 @@ def _NewDtype(pdsdata,fields):
 		
 		
 
-def _ConvBinary(fmt,files,outdir,fpatt,fields,DateInds):
-	#set the output folder
-	outpath = Globals.MessPath+'FIPS/'+outdir
-	
-	if not os.path.isdir(outpath):
-		os.system('mkdir -pv '+outpath)
+def _ConvBinary(fmt,files,outpath,fpatt,fields,DateRegex):
+
+	#check the outpath has '/' at the end
+	if outpath[-1] != '/':
+		outpath = outpath + '/'
+
 	#get fmt data
 	fmtdata = PDSFMTtodtype(fmt)
 	
+	#if fields is None the we need to copy the original ones
+	if fields is None:
+		fields = {}
+		ff = fmtdata[0]
+		for i in range(0,len(ff)):
+			fld = ff[i][0]
+			fields[fld] = fld
+			
 	
 	oldfields = list(fields.keys())
 	newfields = [fields[f] for f in oldfields]
 
+	#create regex patterns
+	dp7 = re.compile('\d\d\d\d\d\d\d')
+	dp8 = re.compile('\d\d\d\d\d\d\d\d')
+	if not DateRegex is None:
+		dre = re.compile(DateRegex)
+	else:
+		dre = None
+
+	
 	
 	#loop through files
 	nf = np.size(files)
 	for i in range(0,nf):
-		
-		
 		#get the date from the file name
 		fsplit = files[i].split('/')
 		flast = fsplit[-1]
-		datestr = flast[DateInds[0]:DateInds[1]+1]
-		year = np.int32(datestr[:4])
-		doy = np.int32(datestr[4:7])
-		Date = TT.DayNotoDate(year,doy)
+		#see if either regex patterns match
+		match7 = dp7.search(flast)
+		match8 = dp8.search(flast)
+		if not dre is None:
+			matchc = dre.search(flast)
+		else:
+			matchc = None
+		
+		if not matchc is None:
+			#this will take a custom Regex match, strip non-numeric 
+			#characters and try to assume a date format
+			datestr = matchc.group()
+			datestr = re.sub("[^0-9]","",datestr)
+			if len(datestr) == 7:
+				#assume yyyyddd
+				year = np.int32(datestr[:4])
+				doy = np.int32(datestr[4:7])
+				Date = TT.DayNotoDate(year,doy)
+				fname = outpath + '{:08d}.bin'.format(Date)				
+			elif len(datestr) >= 8:
+				#assume yyyymmdd
+				Date = np.int32(datestr) 
+				fname = outpath + '{:08d}.bin'.format(Date)				
+			else:
+				#fuck it, use the original name
+				fname = outpath + flast
+		
+		elif not match8 is None:
+			#in this case the date might be in the format yyyymmdd
+			Date = np.int32(match8.group()) 
+			fname = outpath + '{:08d}.bin'.format(Date)
+		elif not match7 is None:
+			#in this case we assume a format of yyyyddd
+			datestr = match7.group()
+			year = np.int32(datestr[:4])
+			doy = np.int32(datestr[4:7])
+			Date = TT.DayNotoDate(year,doy)
+			fname = outpath + '{:08d}.bin'.format(Date)
+		else:
+			#use original name
+			fname = outpath + flast
+		
+
 		
 		#read the file first
 		data,_ = ReadPDSFile(files[i],fmtdata)
+		
+		
 		
 		#get the new dtype if needed
 		if i == 0:
 			dtype = _NewDtype(data,fields)
 			print('dtype: ',dtype)
 			print(data.dtype)
+			#save the dtype to a file 
+			f = open(outpath+'dtype','w')
+			f.write('dtype = '+str(dtype))
+			f.close()
+			print('dtype saved to '+outpath+'dtype')
+			
 		print('\rConverting file {:d} of {:d}'.format(i+1,nf),end='')
 		#get the output recarray
 		out = np.recarray(data.size,dtype=dtype)
@@ -155,7 +211,6 @@ def _ConvBinary(fmt,files,outdir,fpatt,fields,DateInds):
 				out[fields[f]] = data[f]
 
 		#save the file
-		fname = outpath + fpatt.format(Date)
 		RT.SaveRecarray(out,fname)
 		
 	print()
